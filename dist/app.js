@@ -1,4 +1,5 @@
 "use strict";
+//drag and drop interfaces, to force draggable item to conform to these rules
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
     if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
@@ -21,11 +22,21 @@ class Project {
         this.status = status;
     }
 }
-// project state class
-class ProjectState {
+// create a class template for State classes
+class State {
     constructor() {
-        // array of listeners
         this.listeners = [];
+    }
+    // method to add listeners to listeres array, must take a listener function
+    addListener(listenerFn) {
+        this.listeners.push(listenerFn);
+    }
+}
+// project state class
+class ProjectState extends State {
+    constructor() {
+        super();
+        // array of listeners
         //array of projects, to be rendered into a list
         this.projects = [];
     }
@@ -37,10 +48,6 @@ class ProjectState {
         this.instance = new ProjectState();
         return this.instance;
     }
-    // method to add listeners to listeres array, must take a listener function
-    addListener(listenerFn) {
-        this.listeners.push(listenerFn);
-    }
     // method to add a project object into the state array
     addProject(title, description, people) {
         // create new project class
@@ -49,7 +56,22 @@ class ProjectState {
         ProjectStatus.Active);
         this.projects.push(newProject);
         // whenever a project is added to the list, we need to tell any listener
-        // that needs to know that the state hase changed, to re render
+        // that needs to know that the state hase changed, to re render lists
+        this.updateListeners();
+    }
+    // method to move projects between lists and change their status
+    moveProject(projId, newStatus) {
+        // search projects array in list, to find the one that matches the id provided
+        const project = this.projects.find((prj) => {
+            return prj.id === projId;
+        });
+        // if we have found one that matches
+        if (project && project.status !== newStatus) {
+            project.status = newStatus;
+            this.updateListeners();
+        }
+    }
+    updateListeners() {
         // loop through listeners array
         for (let listenerFn of this.listeners) {
             // feed a copy of the projects state into all currently existing listeners
@@ -113,46 +135,152 @@ descriptor) => {
     };
     return newDescriptor;
 };
-// set up a class for the List
-class ProjectList {
-    // cosntructor needs identifier for which type of list to render, and also
-    // sets this as the value to the property 'type' in the class
-    constructor(type) {
-        // all this is done when a new instance of ProjectINput is instantiated
-        this.type = type;
-        // get input forms from html
-        this.templateElement = document.getElementById('project-list');
-        // get app container from html
-        this.hostElement = document.getElementById('app');
-        // get node from form element, true = deep copy all elements within it
+// abstract base class, used only for inheritance. can take 2 types of html element to genereate
+// this class is used as a template for the individual classes below
+class Component {
+    constructor(templateId, hostElementId, insertAtStart, newElementId) {
+        // get the template elements we want to render by the id we have entered
+        this.templateElement = document.getElementById(templateId);
+        // get container from host element id
+        this.hostElement = document.getElementById(hostElementId);
+        // retrieve node by importing the selected template
         const importedNode = document.importNode(this.templateElement.content, true);
         // get first child of the node we made
         this.element = importedNode.firstElementChild;
+        // assign element a new id for styling, based on the id we feed the constructor
+        if (newElementId) {
+            this.element.id = newElementId;
+        }
+        // attach the node back into the app container at desired point
+        this.attach(insertAtStart);
+    }
+    // modified attach method with where to insert this new component
+    attach(insertAtBeginning) {
+        this.hostElement.insertAdjacentElement(insertAtBeginning ? 'afterbegin' : 'beforeend', this.element);
+    }
+}
+// set up a project item class
+class ProjectItem extends Component {
+    constructor(HostId, project) {
+        // call Component constructor with necassary info
+        super('single-project', HostId, false, project.id);
+        this.project = project;
+        this.configure();
+        this.renderContent();
+    }
+    // create getter to use when rendering the number of people on project
+    get persons() {
+        if (this.project.people === 1) {
+            return '1 person';
+        }
+        else {
+            return `${this.project.people} people`;
+        }
+    }
+    // drag handlers, as required by Draggable interface
+    // use autobind so these methods have access to This
+    dragStartHandler(event) {
+        // set data transfer data allows us to track which project is being moved
+        event.dataTransfer.setData('text/plain', this.project.id);
+        event.dataTransfer.effectAllowed = 'move';
+    }
+    dragEndHandler(_) {
+        console.log('drag ended');
+    }
+    // set up any listeners
+    configure() {
+        this.element.addEventListener('dragstart', this.dragStartHandler);
+        this.element.addEventListener('dragend', this.dragEndHandler);
+    }
+    // grab tags from template and render the project details within them
+    renderContent() {
+        this.element.querySelector('h2').textContent = this.project.title;
+        this.element.querySelector('h3').textContent = this.persons + ' assigned';
+        this.element.querySelector('p').textContent = this.project.description;
+    }
+}
+__decorate([
+    autobind
+], ProjectItem.prototype, "dragStartHandler", null);
+// set up a class for the List
+class ProjectList extends Component {
+    // cosntructor needs identifier for which type of list to render, and also
+    // sets this as the value to the property 'type' in the class
+    constructor(type) {
+        // feed in the values required by the Component class to it's constructor
+        super('project-list', 'app', false, `${type}-projects`);
+        this.type = type;
+        // all this is done when a new instance of ProjectINput is instantiated
         this.assignedProjects = [];
         // assign element a new id for styling, based on the id we feed the constructor
-        this.element.id = `${this.type}-projects`;
         // create listener in state
         projectState.addListener((projects) => {
-            // in the state class, this will now get called any time the projects
+            // in the state class, this inner fn will now get called any time the projects
             // array changes, thus updating the assigned projects property in this class
-            this.assignedProjects = projects;
+            // need a check to ensure we are working in the correct list
+            const relevantProjects = projects.filter((prj) => {
+                // check to see if this was called by ongoing or finished list
+                if (this.type === 'active') {
+                    // if we are in active list, return only those projects which are active, to be rendered
+                    return prj.status === ProjectStatus.Active;
+                }
+                // else return the finished projects to be rendered
+                return prj.status === ProjectStatus.Finished;
+            });
+            this.assignedProjects = relevantProjects;
             //call render projects to re - render list
             this.renderProjects();
         });
-        this.attach();
+        this.configure();
         this.renderContent();
     }
-    // method to render projects into list
-    renderProjects() {
-        // get the type of list we want to change, ongoing or finished
-        const listEl = document.getElementById(`${this.type}-projects-list`);
-        for (let proj of this.assignedProjects) {
-            // create a list item
-            const listItem = document.createElement('li');
-            // set its text content with current project title
-            listItem.textContent = proj.title;
-            listEl.appendChild(listItem);
+    // add the relevant drag handlers as required by the drag interface
+    // use autobind so these methods have access to This
+    dragOverHandler(event) {
+        // check to make sure the currently dragged item has the relevant permission
+        // to be dropped here (set in the drag start handler in list item)
+        if (event.dataTransfer && event.dataTransfer.types[0] === 'text/plain') {
+            // JS default is to NOT allow dropping. so must be overruled
+            event.preventDefault();
+            // get the currently hovered over list id
+            const listEl = this.element.querySelector('ul');
+            // add the css class Droppable, which will help highlight the list as a target
+            listEl.classList.add('droppable');
         }
+    }
+    dragLeaveHandler(_) {
+        const listEl = this.element.querySelector('ul');
+        // remove the css class Droppable, which will help highlight the list as a target
+        listEl.classList.remove('droppable');
+    }
+    dropHandler(event) {
+        // get the currently dragged project id from the event data
+        const projId = event.dataTransfer.getData('text/plain');
+        projectState.moveProject(projId, this.type === 'active' ? ProjectStatus.Active : ProjectStatus.Finished);
+    }
+    //add any listeners
+    configure() {
+        this.element.addEventListener('dragover', this.dragOverHandler);
+        this.element.addEventListener('dragleave', this.dragLeaveHandler);
+        this.element.addEventListener('drop', this.dropHandler);
+        // state listener
+        projectState.addListener((projects) => {
+            // in the state class, this inner fn will now get called any time the projects
+            // array changes, thus updating the assigned projects property in this class
+            // need a check to ensure we are working in the correct list
+            const relevantProjects = projects.filter((prj) => {
+                // check to see if this was called by ongoing or finished list
+                if (this.type === 'active') {
+                    // if we are in active list, return only those projects which are active, to be rendered
+                    return prj.status === ProjectStatus.Active;
+                }
+                // else return the finished projects to be rendered
+                return prj.status === ProjectStatus.Finished;
+            });
+            this.assignedProjects = relevantProjects;
+            //call render projects to re - render list
+            this.renderProjects();
+        });
     }
     // method to fill in the list section
     renderContent() {
@@ -163,43 +291,48 @@ class ProjectList {
         this.element.querySelector('h2').textContent =
             this.type.toUpperCase() + ' PROJECTS';
     }
-    // attach method to render within app container
-    attach() {
-        this.hostElement.insertAdjacentElement('beforeend', this.element);
+    // method to render projects into list
+    renderProjects() {
+        // get the type of list we want to change, ongoing or finished
+        const list = document.getElementById(`${this.type}-projects-list`);
+        // wipe contents of list, to prevent duplicate entries
+        list.innerHTML = '';
+        // loop over all projects
+        for (let proj of this.assignedProjects) {
+            // create a list item per project, passing in host list id, and project details
+            new ProjectItem(this.element.querySelector('ul').id, proj);
+        }
     }
 }
+__decorate([
+    autobind
+], ProjectList.prototype, "dragOverHandler", null);
+__decorate([
+    autobind
+], ProjectList.prototype, "dragLeaveHandler", null);
+__decorate([
+    autobind
+], ProjectList.prototype, "dropHandler", null);
 // set up class for the input fields
-class ProjectInput {
+class ProjectInput extends Component {
     constructor() {
-        // all this is done when a new instance of ProjectINput is instantiated
-        // get input forms from html
-        this.templateElement = document.getElementById('project-input');
-        // get app container from html
-        this.hostElement = document.getElementById('app');
-        // get node from form element, true = deep copy all elements within it
-        const importedNode = document.importNode(this.templateElement.content, true);
-        // get first child of the node we made
-        this.element = importedNode.firstElementChild;
-        // assign element a new id for styling
-        this.element.id = 'user-input';
+        // feed in the values required by the Component class to it's constructor
+        super('project-input', 'app', true, 'user-input');
         // assign input elements the input fields from the html using their id
         this.titleInputElement = this.element.querySelector('#title');
         this.descriptionInputElement = this.element.querySelector('#description');
         this.peopleInputElement = this.element.querySelector('#people');
-        // start submit listener
+        // start submit listener and configure element
         this.configure();
-        //call attach method
-        this.attach();
     }
     // attach the form node to the inside of the app container
-    attach() {
-        this.hostElement.insertAdjacentElement('afterbegin', this.element);
-    }
     // set up submit listner for form
     configure() {
         // listen for the submit, then call submit handler
         this.element.addEventListener('submit', this.submitHandler);
     }
+    // this is only here to satisfy typescript that we are inheriting Component properly
+    renderContent() { }
     // method to collect and validate form inputs
     // will return array with input, description, and number of people assigned
     gatherUserInput() {
